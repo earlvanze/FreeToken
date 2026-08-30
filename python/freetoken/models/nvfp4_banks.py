@@ -4,6 +4,7 @@ import collections
 import json
 import os
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable
 
@@ -14,6 +15,17 @@ from tqdm import tqdm
 
 LayerToBank = Callable[[int, object], int | None]
 DropPageCache = Callable[[str], None]
+
+
+@contextmanager
+def _single_threaded_torch_copies():
+    """Avoid intra-op fanout for the loader's many small host tensor copies."""
+    previous = torch.get_num_threads()
+    try:
+        torch.set_num_threads(1)
+        yield
+    finally:
+        torch.set_num_threads(previous)
 
 
 @dataclass(frozen=True)
@@ -199,11 +211,16 @@ def load_nvfp4_expert_source_banks(
             drop_page_cache(path)
         return placed
 
-    if layer_sink is not None:
-        placed = _load(layer_sink)
-    else:
-        with PinPipeline() as pins:
-            placed = _load(pins)
+    # These are tens of thousands of small, disjoint host copies.  Letting PyTorch fan
+    # each assignment across a large intra-op pool is dramatically slower on high-core
+    # hosts (and competes with the O_DIRECT reader workers).  Keep placement single-
+    # threaded, then restore the process setting before the runtime is constructed.
+    with _single_threaded_torch_copies():
+        if layer_sink is not None:
+            placed = _load(layer_sink)
+        else:
+            with PinPipeline() as pins:
+                placed = _load(pins)
 
     expected = num_layers * E * 6
     assert placed == expected, f"{spec.desc}: loaded {placed} expert tensors, expected {expected}"
@@ -318,11 +335,14 @@ def load_nvfp4_expert_source_banks_parallel(
             placed += 1
         return placed
 
-    if layer_sink is not None:
-        placed = _load(layer_sink)
-    else:
-        with PinPipeline() as pins:
-            placed = _load(pins)
+    # See the serial loader above: intra-op fanout makes these small host copies
+    # dramatically slower on high-core machines and competes with reader workers.
+    with _single_threaded_torch_copies():
+        if layer_sink is not None:
+            placed = _load(layer_sink)
+        else:
+            with PinPipeline() as pins:
+                placed = _load(pins)
 
     expected = num_layers * E * 6
     assert placed == expected, f"{spec.desc}: loaded {placed} expert tensors, expected {expected}"
