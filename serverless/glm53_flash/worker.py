@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
-from typing import Any
+from typing import Any, Mapping
 
 
 def _positive_int(value: Any, default: int = 0) -> int:
@@ -31,6 +30,7 @@ def _text_size(value: Any) -> int:
 
 
 def completion_workload(payload: Mapping[str, Any]) -> float:
+    """Estimate token work for Vast's queue scheduler without tokenizing twice."""
     prompt_tokens = max(1, (_text_size(payload.get("prompt", "")) + 3) // 4)
     return float(prompt_tokens + _positive_int(payload.get("max_tokens"), 16))
 
@@ -51,6 +51,7 @@ def benchmark_payload() -> dict[str, Any]:
 
 
 def build_worker_config() -> Any:
+    # Keep the repository's pure helper tests independent of the Vast SDK.
     from vastai import (  # type: ignore[import-not-found]
         BenchmarkConfig,
         HandlerConfig,
@@ -101,7 +102,3 @@ def main() -> None:
     from vastai import Worker  # type: ignore[import-not-found]
 
     Worker(build_worker_config()).run()
-
-
-if __name__ == "__main__":
-    main()
