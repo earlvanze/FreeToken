@@ -89,7 +89,12 @@ def iter_nvfp4_expert_pieces(
     folder = download_hf_weight(model_path)
     weight_map = safetensors_weight_map(folder)
 
+    if set(spec.proj_to_role.values()) != {"gate", "up", "down"}:
+        raise ValueError(f"{spec.desc}: expected gate, up, and down projection roles")
+    num_layers = _num_moe_layers(config)
+    num_experts = int(config.num_experts)
     wanted: dict[str, tuple[int, int, str]] = {}
+    seen_slots: set[tuple[int, int, str]] = set()
     for name in weight_map:
         match = spec.key_pattern.match(name)
         if match is None:
@@ -103,10 +108,23 @@ def iter_nvfp4_expert_pieces(
         kind = _canon_kind(spec, match.group("kind"))
         if kind not in ("weight", "weight_scale", "weight_scale_2"):
             raise ValueError(f"{spec.desc}: unknown NVFP4 expert tensor kind {kind!r}")
-        wanted[name] = (bank_layer, int(match.group("expert")), spec.proj_to_role[proj] + _kind_suffix(kind))
-    expected = _num_moe_layers(config) * config.num_experts * 9
-    if len(wanted) != expected:
-        raise ValueError(f"{spec.desc}: found {len(wanted)} expert tensors, expected {expected}")
+        expert = int(match.group("expert"))
+        if not 0 <= expert < num_experts:
+            raise ValueError(f"{spec.desc}: expert {expert} in {name} is outside [0, {num_experts})")
+        slot = (bank_layer, expert, spec.proj_to_role[proj] + _kind_suffix(kind))
+        if slot in seen_slots:
+            raise ValueError(f"{spec.desc}: duplicate NVFP4 expert slot {slot} ({name})")
+        seen_slots.add(slot)
+        wanted[name] = slot
+    expected = num_layers * num_experts * 9
+    if len(seen_slots) != expected:
+        for layer in range(num_layers):
+            for expert in range(num_experts):
+                for role in ("gate", "up", "down"):
+                    for suffix in ("", "_scale", "_global"):
+                        slot = (layer, expert, role + suffix)
+                        if slot not in seen_slots:
+                            raise ValueError(f"{spec.desc}: missing NVFP4 expert slot {slot}")
 
     def _serial():
         by_shard: dict[str, list[str]] = collections.defaultdict(list)
