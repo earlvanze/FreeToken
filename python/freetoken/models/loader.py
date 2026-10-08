@@ -344,6 +344,8 @@ def _copy_expert_layer_into_bank(
             f"Unexpected {bank_name} expert count {tensor.size(0)}; "
             f"expected {config.num_experts}"
         )
+    if layer in seen_layers[bank_name]:
+        raise ValueError(f"Duplicate {bank_name} expert source for layer {layer}")
     expected_shape = row_shape.setdefault(bank_name, tuple(tensor.shape[1:]))
     if tuple(tensor.shape[1:]) != expected_shape:
         raise ValueError(

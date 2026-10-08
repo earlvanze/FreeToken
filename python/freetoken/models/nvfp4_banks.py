@@ -44,6 +44,46 @@ def _bank_layer(spec: Nvfp4ExpertSourceSpec, layer: int, config) -> int | None:
     return bank_layer
 
 
+def _validate_nvfp4_expert_index(weight_map: dict[str, str], config, spec: Nvfp4ExpertSourceSpec) -> None:
+    """Reject incomplete or aliased expert layouts before allocating host banks."""
+    num_layers = _num_moe_layers(config)
+    num_experts = int(config.num_experts)
+    roles = set(spec.proj_to_role.values())
+    if roles != {"gate", "up", "down"}:
+        raise ValueError(f"{spec.desc}: expected gate, up, and down projection roles")
+    kinds = {"weight", "weight_scale", "weight_scale_2"}
+    seen: set[tuple[int, int, str, str]] = set()
+    for name in weight_map:
+        match = spec.key_pattern.match(name)
+        if match is None:
+            continue
+        bank_layer = _bank_layer(spec, int(match.group("layer")), config)
+        if bank_layer is None:
+            continue
+        expert = int(match.group("expert"))
+        if expert < 0 or expert >= num_experts:
+            raise ValueError(f"{spec.desc}: expert {expert} in {name} is outside [0, {num_experts})")
+        projection = match.group("proj")
+        if projection not in spec.proj_to_role:
+            raise ValueError(f"{spec.desc}: unknown NVFP4 expert projection {projection!r}")
+        kind = match.group("kind")
+        if kind not in kinds:
+            raise ValueError(f"{spec.desc}: unknown NVFP4 expert tensor kind {kind!r}")
+        slot = (bank_layer, expert, spec.proj_to_role[projection], kind)
+        if slot in seen:
+            raise ValueError(f"{spec.desc}: duplicate NVFP4 expert slot {slot} ({name})")
+        seen.add(slot)
+    expected_count = num_layers * num_experts * len(roles) * len(kinds)
+    if len(seen) != expected_count:
+        for layer in range(num_layers):
+            for expert in range(num_experts):
+                for role in ("gate", "up", "down"):
+                    for kind in ("weight", "weight_scale", "weight_scale_2"):
+                        slot = (layer, expert, role, kind)
+                        if slot not in seen:
+                            raise ValueError(f"{spec.desc}: missing NVFP4 expert slot {slot}")
+
+
 def _alloc_nvfp4_host_banks(num_layers: int, E: int, H: int, I: int):
     """6 NVFP4 source banks, one ``[E, ...]`` tensor per layer (independent allocations),
     unpinned (pin-after-fill): register only after fill to skip cudaHostAlloc's slow
@@ -90,6 +130,8 @@ def load_nvfp4_expert_source_banks(
     index_path = os.path.join(folder, "model.safetensors.index.json")
     with open(index_path, encoding="utf-8") as f:
         weight_map = json.load(f)["weight_map"]
+
+    _validate_nvfp4_expert_index(weight_map, config, spec)
 
     E = config.num_experts
     H = config.hidden_size
@@ -221,6 +263,8 @@ def load_nvfp4_expert_source_banks_parallel(
     folder = download_hf_weight(model_path)
     with open(os.path.join(folder, "model.safetensors.index.json"), encoding="utf-8") as f:
         weight_map = json.load(f)["weight_map"]
+
+    _validate_nvfp4_expert_index(weight_map, config, spec)
 
     E = config.num_experts
     H = config.hidden_size
