@@ -205,3 +205,26 @@ def test_stream_moe_expert_sources_writes_layers_into_final_banks():
     torch.testing.assert_close(gate_up_source[1], torch.full_like(gate_up_source[1], 3.0))
     torch.testing.assert_close(down_source[0], torch.full_like(down_source[0], 10.0))
     torch.testing.assert_close(down_source[1], torch.full_like(down_source[1], 11.0))
+
+
+def test_stream_moe_expert_sources_rejects_duplicate_after_layer_sink():
+    import pytest
+    from freetoken.models.loader import stream_moe_expert_sources
+
+    config = SimpleNamespace(num_layers=1, num_experts=2)
+    delivered = []
+    tensors = [
+        ("model.layers.0.mlp.experts.gate_up_proj", torch.full((2, 3, 4), 2.0)),
+        ("model.layers.0.mlp.experts.down_proj", torch.full((2, 4, 3), 10.0)),
+        ("model.layers.0.mlp.experts.gate_up_proj", torch.full((2, 3, 4), 99.0)),
+    ]
+
+    def sink(layer, banks):
+        delivered.append((layer, banks["gate_up"].tensor.clone()))
+
+    with pytest.raises(ValueError, match="Duplicate gate_up expert source for layer 0"):
+        stream_moe_expert_sources(tensors, config, dtype=torch.bfloat16, layer_sink=sink)
+
+    assert len(delivered) == 1
+    assert delivered[0][0] == 0
+    torch.testing.assert_close(delivered[0][1], torch.full_like(delivered[0][1], 2.0))
