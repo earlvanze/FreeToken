@@ -94,7 +94,12 @@ def _quant_modes(hf_config: Any) -> tuple[str, str, str, str, tuple[int, int] | 
 
 def parse_config(hf_config: Any) -> ModelConfig:
     text = getattr(hf_config, "text_config", hf_config)
-    layer_types = tuple(str(x) for x in text.layer_types)
+    # Transformers normalizes the release config's deepseek_sparse_attention
+    # layers to indexed_attention. Both describe the same DSA/MLA blocks here.
+    layer_types = tuple(
+        "deepseek_sparse_attention" if str(x) == "indexed_attention" else str(x)
+        for x in text.layer_types
+    )
     mlp_layer_types = tuple(str(x) for x in text.mlp_layer_types)
     if len(layer_types) != int(text.num_hidden_layers):
         raise ValueError("layer_types must contain one entry per decoder layer")

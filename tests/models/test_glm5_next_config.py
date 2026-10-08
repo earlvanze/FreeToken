@@ -83,6 +83,20 @@ def test_official_fp8_config_maps_hybrid_geometry():
     assert full.index_ratio == 4
 
 
+def test_transformers_indexed_attention_alias_maps_same_geometry():
+    from freetoken.models.glm5_next.config import parse_config
+
+    release = _release_config()
+    release.text_config.layer_types = [
+        "indexed_attention" if kind == "deepseek_sparse_attention" else kind
+        for kind in release.text_config.layer_types
+    ]
+    config = parse_config(release)
+
+    assert config.attention_group_for_layer(3).layer_ids == tuple(range(3, 45, 4))
+    assert config.glm5_args.layer_types[3] == "deepseek_sparse_attention"
+
+
 def test_nvfp4_config_keeps_only_routed_experts_quantized():
     from freetoken.models.glm5_next.config import _quant_modes
 
